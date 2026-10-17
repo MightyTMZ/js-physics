@@ -9,6 +9,12 @@ export default function Home() {
   const [permissionState, setPermissionState] = useState<
     "prompt" | "granted" | "unsupported"
   >("prompt");
+  const [geoCoords, setGeoCoords] = useState<{
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+  } | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
 
   const acceleration = includeGravity ? accelWithG : accelWithoutG;
 
@@ -30,6 +36,30 @@ export default function Home() {
     return () => window.removeEventListener("devicemotion", handler);
   };
 
+  const startGeolocation = () => {
+    if (!("geolocation" in navigator)) {
+      setGeoError("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        setGeoCoords({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        });
+        setGeoError(null);
+      },
+      (error) => {
+        setGeoError(error.message);
+      },
+      { enableHighAccuracy: true, maximumAge: 1000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  };
+
   useEffect(() => {
     if (!("DeviceMotionEvent" in window)) {
       setPermissionState("unsupported");
@@ -46,7 +76,12 @@ export default function Home() {
     }
 
     // Non-iOS: just start listening directly
-    return startListening();
+    const cleanupMotion = startListening();
+    const cleanupGeo = startGeolocation();
+    return () => {
+      cleanupMotion?.();
+      cleanupGeo?.();
+    };
   }, []);
 
   const requestPermission = async () => {
@@ -58,6 +93,7 @@ export default function Home() {
         const result = await DME.requestPermission();
         if (result === "granted") {
           startListening();
+          startGeolocation();
         } else {
           setPermissionState("unsupported");
         }
@@ -67,6 +103,7 @@ export default function Home() {
     } else {
       // Non-iOS fallback
       startListening();
+      startGeolocation();
     }
   };
 
@@ -120,6 +157,52 @@ export default function Home() {
             </div>
           ))}
         </div>
+
+        <h2 className="text-2xl font-semibold text-black dark:text-zinc-50">
+          Geolocation
+        </h2>
+
+        {geoError && (
+          <p className="text-red-500 text-sm">{geoError}</p>
+        )}
+
+        {geoCoords ? (
+          <div className="grid grid-cols-2 gap-6 text-center">
+            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Latitude
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                {geoCoords.latitude.toFixed(6)}
+              </span>
+              <span className="text-xs text-zinc-400">°</span>
+            </div>
+            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Longitude
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                {geoCoords.longitude.toFixed(6)}
+              </span>
+              <span className="text-xs text-zinc-400">°</span>
+            </div>
+            <div className="col-span-2 flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Accuracy
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                ±{geoCoords.accuracy.toFixed(1)}
+              </span>
+              <span className="text-xs text-zinc-400">meters</span>
+            </div>
+          </div>
+        ) : (
+          !geoError && (
+            <p className="text-sm text-zinc-400">
+              Waiting for location data…
+            </p>
+          )
+        )}
       </main>
     </div>
   );
