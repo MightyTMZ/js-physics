@@ -3,10 +3,14 @@
 import { useState, useEffect } from "react";
 
 export default function Home() {
-  const [acceleration, setAcceleration] = useState({ x: 0, y: 0, z: 0 });
+  const [accelWithG, setAccelWithG] = useState({ x: 0, y: 0, z: 0 });
+  const [accelWithoutG, setAccelWithoutG] = useState({ x: 0, y: 0, z: 0 });
+  const [includeGravity, setIncludeGravity] = useState(true);
   const [permissionState, setPermissionState] = useState<
     "prompt" | "granted" | "unsupported"
   >("prompt");
+
+  const acceleration = includeGravity ? accelWithG : accelWithoutG;
 
   useEffect(() => {
     if (!("DeviceMotionEvent" in window)) {
@@ -15,13 +19,13 @@ export default function Home() {
     }
 
     const handler = (event: DeviceMotionEvent) => {
-      const acc = event.accelerationIncludingGravity;
-      if (acc) {
-        setAcceleration({
-          x: acc.x ?? 0,
-          y: acc.y ?? 0,
-          z: acc.z ?? 0,
-        });
+      const withG = event.accelerationIncludingGravity;
+      const withoutG = event.acceleration;
+      if (withG) {
+        setAccelWithG({ x: withG.x ?? 0, y: withG.y ?? 0, z: withG.z ?? 0 });
+      }
+      if (withoutG) {
+        setAccelWithoutG({ x: withoutG.x ?? 0, y: withoutG.y ?? 0, z: withoutG.z ?? 0 });
       }
     };
 
@@ -52,6 +56,18 @@ export default function Home() {
         <h1 className="text-3xl font-semibold text-black dark:text-zinc-50">
           Device Acceleration
         </h1>
+
+        <button
+          onClick={() => setIncludeGravity((v) => !v)}
+          className="flex items-center gap-3 rounded-full border border-zinc-200 px-5 py-2 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+        >
+          <span
+            className={`inline-block h-3 w-3 rounded-full ${
+              includeGravity ? "bg-green-500" : "bg-zinc-400"
+            }`}
+          />
+          {includeGravity ? "Including Gravity" : "Excluding Gravity"}
+        </button>
 
         {permissionState === "unsupported" && (
           <p className="text-red-500">
