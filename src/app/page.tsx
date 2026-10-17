@@ -12,12 +12,7 @@ export default function Home() {
 
   const acceleration = includeGravity ? accelWithG : accelWithoutG;
 
-  useEffect(() => {
-    if (!("DeviceMotionEvent" in window)) {
-      setPermissionState("unsupported");
-      return;
-    }
-
+  const startListening = () => {
     const handler = (event: DeviceMotionEvent) => {
       const withG = event.accelerationIncludingGravity;
       const withoutG = event.acceleration;
@@ -33,20 +28,45 @@ export default function Home() {
     setPermissionState("granted");
 
     return () => window.removeEventListener("devicemotion", handler);
-  }, []);
+  };
 
-  const requestPermission = async () => {
-    // iOS 13+ requires explicit permission request
+  useEffect(() => {
+    if (!("DeviceMotionEvent" in window)) {
+      setPermissionState("unsupported");
+      return;
+    }
+
+    // iOS 13+ requires a user gesture to request permission
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
     if (typeof DME.requestPermission === "function") {
-      const result = await DME.requestPermission();
-      if (result === "granted") {
-        setPermissionState("granted");
-        // Re-trigger the effect by reloading
-        window.location.reload();
+      // Stay in "prompt" state — user must tap the button
+      return;
+    }
+
+    // Non-iOS: just start listening directly
+    return startListening();
+  }, []);
+
+  const requestPermission = async () => {
+    const DME = DeviceMotionEvent as unknown as {
+      requestPermission?: () => Promise<string>;
+    };
+    if (typeof DME.requestPermission === "function") {
+      try {
+        const result = await DME.requestPermission();
+        if (result === "granted") {
+          startListening();
+        } else {
+          setPermissionState("unsupported");
+        }
+      } catch {
+        setPermissionState("unsupported");
       }
+    } else {
+      // Non-iOS fallback
+      startListening();
     }
   };
 
