@@ -164,7 +164,7 @@ export default function Home() {
     window.addEventListener("devicemotion", motionHandler);
     window.addEventListener("deviceorientation", orientationHandler);
 
-    // Every 1 s: snapshot sensor data & push into sliding-window buffer
+    // Every 20 ms (50 Hz): snapshot sensor data & push into sliding-window buffer
     const sampleId = setInterval(() => {
       const snapshot = { ...latestRef.current };
       setData(snapshot);
@@ -172,7 +172,7 @@ export default function Home() {
       if (bufferRef.current.length > WINDOW_SIZE) {
         bufferRef.current = bufferRef.current.slice(-WINDOW_SIZE);
       }
-    }, 1000);
+    }, 20);
 
     // Every 5 s: run inference
     const inferenceId = setInterval(() => {
