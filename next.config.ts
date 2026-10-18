@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
@@ -12,7 +11,6 @@ const nextConfig: NextConfig = {
       },
     },
   },
-  serverExternalPackages: ["onnxruntime-web"],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
