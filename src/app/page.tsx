@@ -31,7 +31,7 @@ const NORM_STDS = metadata.normalization.stds;
 const FEATURES_PER_TIMESTEP = metadata.sensorCols.length; // 12
 const TOTAL_FEATURES = NORM_MEANS.length; // 120
 const WINDOW_SIZE = TOTAL_FEATURES / FEATURES_PER_TIMESTEP; // 10 timesteps
-const INFERENCE_INTERVAL = 5000;
+const INFERENCE_INTERVAL = 30000;
 
 // ---- helpers ---------------------------------------------------------------
 
