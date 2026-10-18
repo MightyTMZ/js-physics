@@ -1,11 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+
+interface SensorData {
+  attitude: { roll: number; pitch: number; yaw: number };
+  gravity: { x: number; y: number; z: number };
+  rotationRate: { x: number; y: number; z: number };
+  userAcceleration: { x: number; y: number; z: number };
+}
+
+const INITIAL: SensorData = {
+  attitude: { roll: 0, pitch: 0, yaw: 0 },
+  gravity: { x: 0, y: 0, z: 0 },
+  rotationRate: { x: 0, y: 0, z: 0 },
+  userAcceleration: { x: 0, y: 0, z: 0 },
+};
+
+function degToRad(deg: number) {
+  return (deg * Math.PI) / 180;
+}
 
 export default function Home() {
-  const [accelWithG, setAccelWithG] = useState({ x: 0, y: 0, z: 0 });
-  const [accelWithoutG, setAccelWithoutG] = useState({ x: 0, y: 0, z: 0 });
-  const [includeGravity, setIncludeGravity] = useState(true);
+  const [data, setData] = useState<SensorData>(INITIAL);
   const [permissionState, setPermissionState] = useState<
     "prompt" | "granted" | "unsupported"
   >("prompt");
@@ -16,24 +32,68 @@ export default function Home() {
   } | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
 
-  const acceleration = includeGravity ? accelWithG : accelWithoutG;
+  // Use a ref to accumulate the latest readings, then flush to state once per second
+  const latestRef = useRef<SensorData>({ ...INITIAL });
 
   const startListening = () => {
-    const handler = (event: DeviceMotionEvent) => {
-      const withG = event.accelerationIncludingGravity;
-      const withoutG = event.acceleration;
-      if (withG) {
-        setAccelWithG({ x: withG.x ?? 0, y: withG.y ?? 0, z: withG.z ?? 0 });
+    // --- DeviceMotion: acceleration, gravity, rotation rate ---
+    const motionHandler = (event: DeviceMotionEvent) => {
+      const accel = event.acceleration;
+      const accelG = event.accelerationIncludingGravity;
+      const rot = event.rotationRate;
+
+      if (accel) {
+        latestRef.current.userAcceleration = {
+          x: accel.x ?? 0,
+          y: accel.y ?? 0,
+          z: accel.z ?? 0,
+        };
       }
-      if (withoutG) {
-        setAccelWithoutG({ x: withoutG.x ?? 0, y: withoutG.y ?? 0, z: withoutG.z ?? 0 });
+
+      // Gravity = accelerationIncludingGravity - userAcceleration
+      if (accelG && accel) {
+        latestRef.current.gravity = {
+          x: (accelG.x ?? 0) - (accel.x ?? 0),
+          y: (accelG.y ?? 0) - (accel.y ?? 0),
+          z: (accelG.z ?? 0) - (accel.z ?? 0),
+        };
+      }
+
+      if (rot) {
+        latestRef.current.rotationRate = {
+          x: rot.alpha ?? 0,
+          y: rot.beta ?? 0,
+          z: rot.gamma ?? 0,
+        };
       }
     };
 
-    window.addEventListener("devicemotion", handler);
+    // --- DeviceOrientation: attitude (pitch, roll, yaw) ---
+    const orientationHandler = (event: DeviceOrientationEvent) => {
+      // beta = pitch (-180..180°), gamma = roll (-90..90°), alpha = yaw (0..360°)
+      // Convert to radians to match the CSV format
+      latestRef.current.attitude = {
+        pitch: degToRad(event.beta ?? 0),
+        roll: degToRad(event.gamma ?? 0),
+        yaw: degToRad(event.alpha ?? 0),
+      };
+    };
+
+    window.addEventListener("devicemotion", motionHandler);
+    window.addEventListener("deviceorientation", orientationHandler);
+
+    // Flush latest readings to React state once per second
+    const intervalId = setInterval(() => {
+      setData({ ...latestRef.current });
+    }, 1000);
+
     setPermissionState("granted");
 
-    return () => window.removeEventListener("devicemotion", handler);
+    return () => {
+      window.removeEventListener("devicemotion", motionHandler);
+      window.removeEventListener("deviceorientation", orientationHandler);
+      clearInterval(intervalId);
+    };
   };
 
   const startGeolocation = () => {
@@ -66,16 +126,13 @@ export default function Home() {
       return;
     }
 
-    // iOS 13+ requires a user gesture to request permission
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
     if (typeof DME.requestPermission === "function") {
-      // Stay in "prompt" state — user must tap the button
       return;
     }
 
-    // Non-iOS: just start listening directly
     const cleanupMotion = startListening();
     const cleanupGeo = startGeolocation();
     return () => {
@@ -88,47 +145,86 @@ export default function Home() {
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
-    if (typeof DME.requestPermission === "function") {
-      try {
-        const result = await DME.requestPermission();
-        if (result === "granted") {
-          startListening();
-          startGeolocation();
-        } else {
+    // Also request orientation permission on iOS
+    const DOE = DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<string>;
+    };
+
+    try {
+      if (typeof DME.requestPermission === "function") {
+        const motionResult = await DME.requestPermission();
+        if (motionResult !== "granted") {
           setPermissionState("unsupported");
+          return;
         }
-      } catch {
-        setPermissionState("unsupported");
       }
-    } else {
-      // Non-iOS fallback
+      if (typeof DOE.requestPermission === "function") {
+        const orientResult = await DOE.requestPermission();
+        if (orientResult !== "granted") {
+          setPermissionState("unsupported");
+          return;
+        }
+      }
       startListening();
       startGeolocation();
+    } catch {
+      setPermissionState("unsupported");
     }
   };
 
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-col items-center gap-8">
-        <h1 className="text-3xl font-semibold text-black dark:text-zinc-50">
-          Device Acceleration
-        </h1>
+  const sections: {
+    title: string;
+    unit: string;
+    keys: { label: string; value: number }[];
+  }[] = [
+    {
+      title: "Attitude",
+      unit: "rad",
+      keys: [
+        { label: "Roll", value: data.attitude.roll },
+        { label: "Pitch", value: data.attitude.pitch },
+        { label: "Yaw", value: data.attitude.yaw },
+      ],
+    },
+    {
+      title: "Gravity",
+      unit: "m/s²",
+      keys: [
+        { label: "X", value: data.gravity.x },
+        { label: "Y", value: data.gravity.y },
+        { label: "Z", value: data.gravity.z },
+      ],
+    },
+    {
+      title: "Rotation Rate",
+      unit: "°/s",
+      keys: [
+        { label: "X", value: data.rotationRate.x },
+        { label: "Y", value: data.rotationRate.y },
+        { label: "Z", value: data.rotationRate.z },
+      ],
+    },
+    {
+      title: "User Acceleration",
+      unit: "m/s²",
+      keys: [
+        { label: "X", value: data.userAcceleration.x },
+        { label: "Y", value: data.userAcceleration.y },
+        { label: "Z", value: data.userAcceleration.z },
+      ],
+    },
+  ];
 
-        <button
-          onClick={() => setIncludeGravity((v) => !v)}
-          className="flex items-center gap-3 rounded-full border border-zinc-200 px-5 py-2 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-        >
-          <span
-            className={`inline-block h-3 w-3 rounded-full ${
-              includeGravity ? "bg-green-500" : "bg-zinc-400"
-            }`}
-          />
-          {includeGravity ? "Including Gravity" : "Excluding Gravity"}
-        </button>
+  return (
+    <div className="flex min-h-screen flex-col items-center bg-zinc-50 py-10 font-sans dark:bg-black">
+      <main className="flex w-full max-w-md flex-col items-center gap-8 px-4">
+        <h1 className="text-3xl font-semibold text-black dark:text-zinc-50">
+          Device Sensors
+        </h1>
 
         {permissionState === "unsupported" && (
           <p className="text-red-500">
-            DeviceMotion API is not supported on this device/browser.
+            Motion/Orientation API is not supported on this device/browser.
           </p>
         )}
 
@@ -137,72 +233,82 @@ export default function Home() {
             onClick={requestPermission}
             className="rounded-full bg-black px-6 py-3 text-white dark:bg-white dark:text-black"
           >
-            Enable Motion Sensor
+            Enable Motion Sensors
           </button>
         )}
 
-        <div className="grid grid-cols-3 gap-6 text-center">
-          {(["x", "y", "z"] as const).map((axis) => (
-            <div
-              key={axis}
-              className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800"
-            >
-              <span className="text-sm uppercase tracking-wider text-zinc-500">
-                {axis}
-              </span>
-              <span className="mt-2 text-4xl font-mono font-bold text-black dark:text-white">
-                {acceleration[axis].toFixed(2)}
-              </span>
-              <span className="text-xs text-zinc-400">m/s²</span>
-            </div>
-          ))}
-        </div>
-
-        <h2 className="text-2xl font-semibold text-black dark:text-zinc-50">
-          Geolocation
-        </h2>
-
-        {geoError && (
-          <p className="text-red-500 text-sm">{geoError}</p>
-        )}
-
-        {geoCoords ? (
-          <div className="grid grid-cols-2 gap-6 text-center">
-            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
-              <span className="text-sm uppercase tracking-wider text-zinc-500">
-                Latitude
-              </span>
-              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
-                {geoCoords.latitude.toFixed(6)}
-              </span>
-              <span className="text-xs text-zinc-400">°</span>
-            </div>
-            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
-              <span className="text-sm uppercase tracking-wider text-zinc-500">
-                Longitude
-              </span>
-              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
-                {geoCoords.longitude.toFixed(6)}
-              </span>
-              <span className="text-xs text-zinc-400">°</span>
-            </div>
-            <div className="col-span-2 flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
-              <span className="text-sm uppercase tracking-wider text-zinc-500">
-                Accuracy
-              </span>
-              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
-                ±{geoCoords.accuracy.toFixed(1)}
-              </span>
-              <span className="text-xs text-zinc-400">meters</span>
+        {sections.map((section) => (
+          <div key={section.title} className="w-full">
+            <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
+              {section.title}
+            </h2>
+            <div className="grid grid-cols-3 gap-3">
+              {section.keys.map((k) => (
+                <div
+                  key={k.label}
+                  className="flex flex-col items-center rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800"
+                >
+                  <span className="text-xs uppercase tracking-wider text-zinc-500">
+                    {k.label}
+                  </span>
+                  <span className="mt-1 text-2xl font-mono font-bold text-black dark:text-white">
+                    {k.value.toFixed(4)}
+                  </span>
+                  <span className="text-xs text-zinc-400">{section.unit}</span>
+                </div>
+              ))}
             </div>
           </div>
-        ) : (
-          !geoError && (
-            <p className="text-sm text-zinc-400">
-              Waiting for location data…
-            </p>
-          )
-        )}
+        ))}
+
+        {/* Geolocation */}
+        <div className="w-full">
+          <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
+            Geolocation
+          </h2>
+
+          {geoError && (
+            <p className="text-red-500 text-sm mb-2">{geoError}</p>
+          )}
+
+          {geoCoords ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
+                <span className="text-xs uppercase tracking-wider text-zinc-500">
+                  Latitude
+                </span>
+                <span className="mt-1 text-xl font-mono font-bold text-black dark:text-white">
+                  {geoCoords.latitude.toFixed(6)}
+                </span>
+                <span className="text-xs text-zinc-400">°</span>
+              </div>
+              <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
+                <span className="text-xs uppercase tracking-wider text-zinc-500">
+                  Longitude
+                </span>
+                <span className="mt-1 text-xl font-mono font-bold text-black dark:text-white">
+                  {geoCoords.longitude.toFixed(6)}
+                </span>
+                <span className="text-xs text-zinc-400">°</span>
+              </div>
+              <div className="col-span-2 flex flex-col items-center rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
+                <span className="text-xs uppercase tracking-wider text-zinc-500">
+                  Accuracy
+                </span>
+                <span className="mt-1 text-xl font-mono font-bold text-black dark:text-white">
+                  ±{geoCoords.accuracy.toFixed(1)}
+                </span>
+                <span className="text-xs text-zinc-400">meters</span>
+              </div>
+            </div>
+          ) : (
+            !geoError && (
+              <p className="text-sm text-zinc-400">
+                Waiting for location data…
+              </p>
+            )
+          )}
+        </div>
       </main>
     </div>
   );
