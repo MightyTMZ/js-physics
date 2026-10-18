@@ -1,5 +1,6 @@
 "use client";
 
+<<<<<<< HEAD
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as ort from "onnxruntime-web";
 
@@ -41,6 +42,9 @@ const INFERENCE_INTERVAL = 5000; // run inference every 5 s
 function degToRad(deg: number) {
   return (deg * Math.PI) / 180;
 }
+=======
+import { useState, useEffect } from "react";
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
 
 /** Convert a SensorData snapshot into a flat 12-element array matching the
  *  CSV column order: attitude.roll, attitude.pitch, attitude.yaw, gravity.x,
@@ -66,7 +70,9 @@ function sensorToRow(d: SensorData): number[] {
 // ---- component -------------------------------------------------------------
 
 export default function Home() {
-  const [data, setData] = useState<SensorData>(INITIAL);
+  const [accelWithG, setAccelWithG] = useState({ x: 0, y: 0, z: 0 });
+  const [accelWithoutG, setAccelWithoutG] = useState({ x: 0, y: 0, z: 0 });
+  const [includeGravity, setIncludeGravity] = useState(true);
   const [permissionState, setPermissionState] = useState<
     "prompt" | "granted" | "unsupported"
   >("prompt");
@@ -78,6 +84,7 @@ export default function Home() {
   const [geoError, setGeoError] = useState<string | null>(null);
   const [prediction, setPrediction] = useState<Prediction | null>(null);
 
+<<<<<<< HEAD
   // Accumulate latest raw reading (high-frequency sensor events)
   const latestRef = useRef<SensorData>({ ...INITIAL });
   // Sliding window: most recent 6 one-second snapshots
@@ -202,6 +209,27 @@ export default function Home() {
   }, [runInference]);
 
   // ---- geolocation ----------------------------------------------------------
+=======
+  const acceleration = includeGravity ? accelWithG : accelWithoutG;
+
+  const startListening = () => {
+    const handler = (event: DeviceMotionEvent) => {
+      const withG = event.accelerationIncludingGravity;
+      const withoutG = event.acceleration;
+      if (withG) {
+        setAccelWithG({ x: withG.x ?? 0, y: withG.y ?? 0, z: withG.z ?? 0 });
+      }
+      if (withoutG) {
+        setAccelWithoutG({ x: withoutG.x ?? 0, y: withoutG.y ?? 0, z: withoutG.z ?? 0 });
+      }
+    };
+
+    window.addEventListener("devicemotion", handler);
+    setPermissionState("granted");
+
+    return () => window.removeEventListener("devicemotion", handler);
+  };
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
 
   const startGeolocation = () => {
     if (!("geolocation" in navigator)) {
@@ -230,11 +258,24 @@ export default function Home() {
       setPermissionState("unsupported");
       return;
     }
+<<<<<<< HEAD
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
     if (typeof DME.requestPermission === "function") return;
+=======
 
+    // iOS 13+ requires a user gesture to request permission
+    const DME = DeviceMotionEvent as unknown as {
+      requestPermission?: () => Promise<string>;
+    };
+    if (typeof DME.requestPermission === "function") {
+      // Stay in "prompt" state — user must tap the button
+      return;
+    }
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
+
+    // Non-iOS: just start listening directly
     const cleanupMotion = startListening();
     const cleanupGeo = startGeolocation();
     return () => {
@@ -247,6 +288,7 @@ export default function Home() {
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
+<<<<<<< HEAD
     const DOE = DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
@@ -263,15 +305,28 @@ export default function Home() {
         if (r !== "granted") {
           setPermissionState("unsupported");
           return;
+=======
+    if (typeof DME.requestPermission === "function") {
+      try {
+        const result = await DME.requestPermission();
+        if (result === "granted") {
+          startListening();
+          startGeolocation();
+        } else {
+          setPermissionState("unsupported");
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
         }
+      } catch {
+        setPermissionState("unsupported");
       }
+    } else {
+      // Non-iOS fallback
       startListening();
       startGeolocation();
-    } catch {
-      setPermissionState("unsupported");
     }
   };
 
+<<<<<<< HEAD
   // ---- UI data --------------------------------------------------------------
 
   const sections: {
@@ -317,16 +372,30 @@ export default function Home() {
     },
   ];
 
+=======
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
   return (
-    <div className="flex min-h-screen flex-col items-center bg-zinc-50 py-10 font-sans dark:bg-black">
-      <main className="flex w-full max-w-md flex-col items-center gap-8 px-4">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 font-sans dark:bg-black">
+      <main className="flex flex-col items-center gap-8">
         <h1 className="text-3xl font-semibold text-black dark:text-zinc-50">
-          Device Sensors
+          Device Acceleration
         </h1>
+
+        <button
+          onClick={() => setIncludeGravity((v) => !v)}
+          className="flex items-center gap-3 rounded-full border border-zinc-200 px-5 py-2 text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+        >
+          <span
+            className={`inline-block h-3 w-3 rounded-full ${
+              includeGravity ? "bg-green-500" : "bg-zinc-400"
+            }`}
+          />
+          {includeGravity ? "Including Gravity" : "Excluding Gravity"}
+        </button>
 
         {permissionState === "unsupported" && (
           <p className="text-red-500">
-            Motion/Orientation API is not supported on this device/browser.
+            DeviceMotion API is not supported on this device/browser.
           </p>
         )}
 
@@ -335,10 +404,11 @@ export default function Home() {
             onClick={requestPermission}
             className="rounded-full bg-black px-6 py-3 text-white dark:bg-white dark:text-black"
           >
-            Enable Motion Sensors
+            Enable Motion Sensor
           </button>
         )}
 
+<<<<<<< HEAD
         {/* Prediction */}
         <div className="w-full rounded-2xl border-2 border-indigo-500 bg-indigo-50 p-5 dark:bg-indigo-950">
           <h2 className="mb-2 text-lg font-semibold text-indigo-900 dark:text-indigo-100">
@@ -448,6 +518,70 @@ export default function Home() {
             )
           )}
         </div>
+=======
+        <div className="grid grid-cols-3 gap-6 text-center">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <div
+              key={axis}
+              className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800"
+            >
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                {axis}
+              </span>
+              <span className="mt-2 text-4xl font-mono font-bold text-black dark:text-white">
+                {acceleration[axis].toFixed(2)}
+              </span>
+              <span className="text-xs text-zinc-400">m/s²</span>
+            </div>
+          ))}
+        </div>
+
+        <h2 className="text-2xl font-semibold text-black dark:text-zinc-50">
+          Geolocation
+        </h2>
+
+        {geoError && (
+          <p className="text-red-500 text-sm">{geoError}</p>
+        )}
+
+        {geoCoords ? (
+          <div className="grid grid-cols-2 gap-6 text-center">
+            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Latitude
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                {geoCoords.latitude.toFixed(6)}
+              </span>
+              <span className="text-xs text-zinc-400">°</span>
+            </div>
+            <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Longitude
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                {geoCoords.longitude.toFixed(6)}
+              </span>
+              <span className="text-xs text-zinc-400">°</span>
+            </div>
+            <div className="col-span-2 flex flex-col items-center rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <span className="text-sm uppercase tracking-wider text-zinc-500">
+                Accuracy
+              </span>
+              <span className="mt-2 text-2xl font-mono font-bold text-black dark:text-white">
+                ±{geoCoords.accuracy.toFixed(1)}
+              </span>
+              <span className="text-xs text-zinc-400">meters</span>
+            </div>
+          </div>
+        ) : (
+          !geoError && (
+            <p className="text-sm text-zinc-400">
+              Waiting for location data…
+            </p>
+          )
+        )}
+>>>>>>> parent of ddc28a5 (12 features for device calculation)
       </main>
     </div>
   );
