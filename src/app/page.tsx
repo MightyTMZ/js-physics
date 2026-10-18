@@ -1,12 +1,20 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import * as ort from "onnxruntime-web";
+
+// ---- types ----------------------------------------------------------------
 
 interface SensorData {
   attitude: { roll: number; pitch: number; yaw: number };
   gravity: { x: number; y: number; z: number };
   rotationRate: { x: number; y: number; z: number };
   userAcceleration: { x: number; y: number; z: number };
+}
+
+interface Prediction {
+  label: string;
+  probabilities: Record<string, number>;
 }
 
 const INITIAL: SensorData = {
@@ -16,9 +24,46 @@ const INITIAL: SensorData = {
   userAcceleration: { x: 0, y: 0, z: 0 },
 };
 
+const LABELS = [
+  "downstairs",
+  "jogging",
+  "sitting",
+  "standing",
+  "upstairs",
+  "walking",
+];
+
+const WINDOW_SIZE = 6; // 6 timesteps (1 per second)
+const INFERENCE_INTERVAL = 5000; // run inference every 5 s
+
+// ---- helpers ---------------------------------------------------------------
+
 function degToRad(deg: number) {
   return (deg * Math.PI) / 180;
 }
+
+/** Convert a SensorData snapshot into a flat 12-element array matching the
+ *  CSV column order: attitude.roll, attitude.pitch, attitude.yaw, gravity.x,
+ *  gravity.y, gravity.z, rotationRate.x, rotationRate.y, rotationRate.z,
+ *  userAcceleration.x, userAcceleration.y, userAcceleration.z */
+function sensorToRow(d: SensorData): number[] {
+  return [
+    d.attitude.roll,
+    d.attitude.pitch,
+    d.attitude.yaw,
+    d.gravity.x,
+    d.gravity.y,
+    d.gravity.z,
+    d.rotationRate.x,
+    d.rotationRate.y,
+    d.rotationRate.z,
+    d.userAcceleration.x,
+    d.userAcceleration.y,
+    d.userAcceleration.z,
+  ];
+}
+
+// ---- component -------------------------------------------------------------
 
 export default function Home() {
   const [data, setData] = useState<SensorData>(INITIAL);
@@ -31,12 +76,66 @@ export default function Home() {
     accuracy: number;
   } | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
+  const [prediction, setPrediction] = useState<Prediction | null>(null);
 
-  // Use a ref to accumulate the latest readings, then flush to state once per second
+  // Accumulate latest raw reading (high-frequency sensor events)
   const latestRef = useRef<SensorData>({ ...INITIAL });
+  // Sliding window: most recent 6 one-second snapshots
+  const bufferRef = useRef<number[][]>([]);
+  // ONNX session
+  const sessionRef = useRef<ort.InferenceSession | null>(null);
 
-  const startListening = () => {
-    // --- DeviceMotion: acceleration, gravity, rotation rate ---
+  // ---- load ONNX model once ------------------------------------------------
+
+  useEffect(() => {
+    ort.env.wasm.wasmPaths = "/";
+
+    ort.InferenceSession.create("/model.onnx").then((session) => {
+      sessionRef.current = session;
+      console.log("ONNX model loaded");
+    });
+  }, []);
+
+  // ---- inference ------------------------------------------------------------
+
+  const runInference = useCallback(async () => {
+    const session = sessionRef.current;
+    const buf = bufferRef.current;
+    if (!session || buf.length < WINDOW_SIZE) return;
+
+    // Take the latest WINDOW_SIZE rows and flatten → 1×72
+    const window = buf.slice(-WINDOW_SIZE);
+    const flat = new Float32Array(window.flat());
+    const tensor = new ort.Tensor("float32", flat, [1, 72]);
+
+    const results = await session.run({ features: tensor });
+
+    const label = results["output_label"].data[0] as string;
+
+    // output_probability is a sequence of maps — onnxruntime-web gives us a
+    // Map or plain object per sample
+    const probMap = results["output_probability"].data[0] as unknown as Map<
+      string,
+      number
+    >;
+    const probabilities: Record<string, number> = {};
+    if (probMap instanceof Map) {
+      probMap.forEach((v, k) => {
+        probabilities[k] = Math.round(v * 10000) / 10000;
+      });
+    } else {
+      // fallback if it's a plain object
+      for (const k of LABELS) {
+        probabilities[k] = (probMap as Record<string, number>)[k] ?? 0;
+      }
+    }
+
+    setPrediction({ label, probabilities });
+  }, []);
+
+  // ---- sensor listeners -----------------------------------------------------
+
+  const startListening = useCallback(() => {
     const motionHandler = (event: DeviceMotionEvent) => {
       const accel = event.acceleration;
       const accelG = event.accelerationIncludingGravity;
@@ -49,8 +148,6 @@ export default function Home() {
           z: accel.z ?? 0,
         };
       }
-
-      // Gravity = accelerationIncludingGravity - userAcceleration
       if (accelG && accel) {
         latestRef.current.gravity = {
           x: (accelG.x ?? 0) - (accel.x ?? 0),
@@ -58,7 +155,6 @@ export default function Home() {
           z: (accelG.z ?? 0) - (accel.z ?? 0),
         };
       }
-
       if (rot) {
         latestRef.current.rotationRate = {
           x: rot.alpha ?? 0,
@@ -68,10 +164,7 @@ export default function Home() {
       }
     };
 
-    // --- DeviceOrientation: attitude (pitch, roll, yaw) ---
     const orientationHandler = (event: DeviceOrientationEvent) => {
-      // beta = pitch (-180..180°), gamma = roll (-90..90°), alpha = yaw (0..360°)
-      // Convert to radians to match the CSV format
       latestRef.current.attitude = {
         pitch: degToRad(event.beta ?? 0),
         roll: degToRad(event.gamma ?? 0),
@@ -82,26 +175,39 @@ export default function Home() {
     window.addEventListener("devicemotion", motionHandler);
     window.addEventListener("deviceorientation", orientationHandler);
 
-    // Flush latest readings to React state once per second
-    const intervalId = setInterval(() => {
-      setData({ ...latestRef.current });
+    // Every 1 s: flush to React state & push into sliding-window buffer
+    const sampleId = setInterval(() => {
+      const snapshot = { ...latestRef.current };
+      setData(snapshot);
+      bufferRef.current.push(sensorToRow(snapshot));
+      // Keep only the latest WINDOW_SIZE rows
+      if (bufferRef.current.length > WINDOW_SIZE) {
+        bufferRef.current = bufferRef.current.slice(-WINDOW_SIZE);
+      }
     }, 1000);
+
+    // Every 5 s: run inference
+    const inferenceId = setInterval(() => {
+      runInference();
+    }, INFERENCE_INTERVAL);
 
     setPermissionState("granted");
 
     return () => {
       window.removeEventListener("devicemotion", motionHandler);
       window.removeEventListener("deviceorientation", orientationHandler);
-      clearInterval(intervalId);
+      clearInterval(sampleId);
+      clearInterval(inferenceId);
     };
-  };
+  }, [runInference]);
+
+  // ---- geolocation ----------------------------------------------------------
 
   const startGeolocation = () => {
     if (!("geolocation" in navigator)) {
       setGeoError("Geolocation is not supported by this browser.");
       return;
     }
-
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         setGeoCoords({
@@ -111,27 +217,23 @@ export default function Home() {
         });
         setGeoError(null);
       },
-      (error) => {
-        setGeoError(error.message);
-      },
+      (error) => setGeoError(error.message),
       { enableHighAccuracy: true, maximumAge: 1000 }
     );
-
     return () => navigator.geolocation.clearWatch(watchId);
   };
+
+  // ---- permissions / init ---------------------------------------------------
 
   useEffect(() => {
     if (!("DeviceMotionEvent" in window)) {
       setPermissionState("unsupported");
       return;
     }
-
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
-    if (typeof DME.requestPermission === "function") {
-      return;
-    }
+    if (typeof DME.requestPermission === "function") return;
 
     const cleanupMotion = startListening();
     const cleanupGeo = startGeolocation();
@@ -139,28 +241,26 @@ export default function Home() {
       cleanupMotion?.();
       cleanupGeo?.();
     };
-  }, []);
+  }, [startListening]);
 
   const requestPermission = async () => {
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
-    // Also request orientation permission on iOS
     const DOE = DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
-
     try {
       if (typeof DME.requestPermission === "function") {
-        const motionResult = await DME.requestPermission();
-        if (motionResult !== "granted") {
+        const r = await DME.requestPermission();
+        if (r !== "granted") {
           setPermissionState("unsupported");
           return;
         }
       }
       if (typeof DOE.requestPermission === "function") {
-        const orientResult = await DOE.requestPermission();
-        if (orientResult !== "granted") {
+        const r = await DOE.requestPermission();
+        if (r !== "granted") {
           setPermissionState("unsupported");
           return;
         }
@@ -171,6 +271,8 @@ export default function Home() {
       setPermissionState("unsupported");
     }
   };
+
+  // ---- UI data --------------------------------------------------------------
 
   const sections: {
     title: string;
@@ -237,6 +339,45 @@ export default function Home() {
           </button>
         )}
 
+        {/* Prediction */}
+        <div className="w-full rounded-2xl border-2 border-indigo-500 bg-indigo-50 p-5 dark:bg-indigo-950">
+          <h2 className="mb-2 text-lg font-semibold text-indigo-900 dark:text-indigo-100">
+            Activity Prediction
+          </h2>
+          {prediction ? (
+            <>
+              <p className="text-3xl font-bold capitalize text-indigo-700 dark:text-indigo-300">
+                {prediction.label}
+              </p>
+              <div className="mt-3 space-y-1">
+                {LABELS.map((l) => (
+                  <div key={l} className="flex items-center gap-2 text-sm">
+                    <span className="w-24 capitalize text-indigo-800 dark:text-indigo-200">
+                      {l}
+                    </span>
+                    <div className="h-2 flex-1 rounded-full bg-indigo-200 dark:bg-indigo-800">
+                      <div
+                        className="h-full rounded-full bg-indigo-500"
+                        style={{
+                          width: `${(prediction.probabilities[l] ?? 0) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="w-12 text-right font-mono text-indigo-600 dark:text-indigo-400">
+                      {((prediction.probabilities[l] ?? 0) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-indigo-400">
+              Collecting data… (need 6 s of readings)
+            </p>
+          )}
+        </div>
+
+        {/* Sensor sections */}
         {sections.map((section) => (
           <div key={section.title} className="w-full">
             <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
@@ -266,11 +407,9 @@ export default function Home() {
           <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
             Geolocation
           </h2>
-
           {geoError && (
             <p className="text-red-500 text-sm mb-2">{geoError}</p>
           )}
-
           {geoCoords ? (
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col items-center rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
